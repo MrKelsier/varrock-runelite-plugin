@@ -28,9 +28,9 @@ import net.runelite.client.plugins.PluginDescriptor;
  */
 @Slf4j
 @PluginDescriptor(
-	name = "Varrock",
-	description = "Syncs your GE slots and trades to your free Varrock (varrock.app) account",
-	tags = {"grandexchange", "ge", "flipping", "trading", "varrock", "sync"}
+	name = "Varrock: GE Flipping Companion",
+	description = "GE flipping utility: syncs your Grand Exchange slots and trades to your free Varrock (varrock.app) account",
+	tags = {"grandexchange", "ge", "flipping", "flipping utilities", "merchanting", "trading", "varrock", "sync"}
 )
 public class VarrockPlugin extends Plugin
 {

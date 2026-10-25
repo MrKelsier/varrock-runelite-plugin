@@ -1,8 +1,8 @@
-# Varrock RuneLite plugin
+# Varrock: GE Flipping Companion
 
-Mirrors your Grand Exchange slots and logs completed trades to your free Varrock account
-(https://www.varrock.app), so the website's GE slots page and Profit tracker fill in
-automatically instead of by hand.
+A GE flipping utility for RuneLite. Mirrors your Grand Exchange slots and logs completed trades
+to your free Varrock account (https://www.varrock.app), where flip scores, signals and a full
+profit tracker fill in automatically instead of by hand.
 
 ## This plugin is always free
 
