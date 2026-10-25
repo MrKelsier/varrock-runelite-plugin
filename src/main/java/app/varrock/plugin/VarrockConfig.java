@@ -22,25 +22,25 @@ public interface VarrockConfig extends Config
 	@ConfigItem(
 		keyName = "supabaseUrl",
 		name = "Supabase project URL",
-		description = "From your Varrock account's Supabase project, e.g. https://xxxx.supabase.co. Leave blank until Varrock publishes its own project URL here.",
+		description = "Varrock's own project. Only change this if you are running your own fork against a different backend.",
 		section = accountSection,
 		position = 0
 	)
 	default String supabaseUrl()
 	{
-		return "";
+		return "https://vrzbuugvrhxllwxshelo.supabase.co";
 	}
 
 	@ConfigItem(
 		keyName = "supabaseAnonKey",
 		name = "Supabase anon key",
-		description = "The public anon key for that same project. Safe to use here: it only ever acts as your own signed-in account thanks to row level security.",
+		description = "Varrock's own public key. Safe to ship here: it only ever acts as your own signed-in account thanks to row level security.",
 		section = accountSection,
 		position = 1
 	)
 	default String supabaseAnonKey()
 	{
-		return "";
+		return "sb_publishable_AO26420X1VX8y1KbzPt0fg_yrK-h_D6";
 	}
 
 	@ConfigItem(

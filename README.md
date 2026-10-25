@@ -28,14 +28,12 @@ feature, against this project's own stated principles.
 ## Setup
 
 1. Create a free Varrock account at https://www.varrock.app (Settings > Account and sync).
-2. In the plugin's RuneLite settings, enter:
-   - **Supabase project URL** and **anon key**: Varrock will publish its own project's values
-     once the backend is live in production (see `ge-edge/.env.example`); until then these are
-     blank and the plugin does nothing except wait, exactly as if signed out.
-   - **Email** and **password**: your Varrock account credentials. These are stored in
-     RuneLite's plain config file, the same as most RuneLite plugin credentials are, so use a
-     password unique to Varrock rather than one reused elsewhere. A safer "app password" flow
-     (separate from your main login) is a reasonable future improvement, not built yet.
+2. In the plugin's RuneLite settings, enter your **email** and **password** (your Varrock account
+   credentials; the Supabase project URL and anon key are already filled in with Varrock's own
+   production project, no need to touch those). Credentials are stored in RuneLite's plain config
+   file, the same as most RuneLite plugin credentials are, so use a password unique to Varrock
+   rather than one reused elsewhere. A safer "app password" flow (separate from your main login)
+   is a reasonable future improvement, not built yet.
 3. Place a GE offer in game. It should appear on varrock.app's GE slots page within a few
    seconds, and a completed trade should appear in Profit tracker once it fills.
 
