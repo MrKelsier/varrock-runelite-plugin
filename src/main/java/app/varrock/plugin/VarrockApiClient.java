@@ -75,7 +75,7 @@ class VarrockApiClient
 			throw new VarrockApiException(describeAuthError(res));
 		}
 
-		JsonObject json = JsonParser.parseString(res.body()).getAsJsonObject();
+		JsonObject json = new JsonParser().parse(res.body()).getAsJsonObject();
 		accessToken = json.get("access_token").getAsString();
 		refreshToken = json.has("refresh_token") ? json.get("refresh_token").getAsString() : null;
 		userId = json.getAsJsonObject("user").get("id").getAsString();
@@ -93,7 +93,7 @@ class VarrockApiClient
 	{
 		try
 		{
-			JsonObject json = JsonParser.parseString(res.body()).getAsJsonObject();
+			JsonObject json = new JsonParser().parse(res.body()).getAsJsonObject();
 			if (json.has("error_description"))
 			{
 				return json.get("error_description").getAsString();
@@ -132,7 +132,7 @@ class VarrockApiClient
 			{
 				return false;
 			}
-			JsonObject json = JsonParser.parseString(res.body()).getAsJsonObject();
+			JsonObject json = new JsonParser().parse(res.body()).getAsJsonObject();
 			accessToken = json.get("access_token").getAsString();
 			if (json.has("refresh_token"))
 			{
