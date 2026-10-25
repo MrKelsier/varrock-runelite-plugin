@@ -1,0 +1,101 @@
+package app.varrock.plugin;
+
+import net.runelite.client.config.Config;
+import net.runelite.client.config.ConfigGroup;
+import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.ConfigSection;
+
+/**
+ * Nothing here ever changes what the plugin does: every field is only used to sign in and sync.
+ * There is no "premium" setting, no license key, no feature this config can lock. See README.md.
+ */
+@ConfigGroup("varrock")
+public interface VarrockConfig extends Config
+{
+	@ConfigSection(
+		name = "Varrock account",
+		description = "Sign in to sync your GE slots and trades to varrock.app. Entirely optional: the plugin's own GE tracking works without this.",
+		position = 0
+	)
+	String accountSection = "account";
+
+	@ConfigItem(
+		keyName = "supabaseUrl",
+		name = "Supabase project URL",
+		description = "From your Varrock account's Supabase project, e.g. https://xxxx.supabase.co. Leave blank until Varrock publishes its own project URL here.",
+		section = accountSection,
+		position = 0
+	)
+	default String supabaseUrl()
+	{
+		return "";
+	}
+
+	@ConfigItem(
+		keyName = "supabaseAnonKey",
+		name = "Supabase anon key",
+		description = "The public anon key for that same project. Safe to use here: it only ever acts as your own signed-in account thanks to row level security.",
+		section = accountSection,
+		position = 1
+	)
+	default String supabaseAnonKey()
+	{
+		return "";
+	}
+
+	@ConfigItem(
+		keyName = "email",
+		name = "Email",
+		description = "Your Varrock account email.",
+		section = accountSection,
+		position = 2
+	)
+	default String email()
+	{
+		return "";
+	}
+
+	@ConfigItem(
+		keyName = "password",
+		name = "Password",
+		description = "Your Varrock account password. Stored in RuneLite's plain config file, the same as most RuneLite plugin credentials: use a password unique to Varrock, not one reused elsewhere.",
+		section = accountSection,
+		position = 3,
+		secret = true
+	)
+	default String password()
+	{
+		return "";
+	}
+
+	@ConfigSection(
+		name = "Sync",
+		description = "What gets sent to your Varrock account.",
+		position = 1
+	)
+	String syncSection = "sync";
+
+	@ConfigItem(
+		keyName = "syncGeSlots",
+		name = "Sync GE slots",
+		description = "Mirror your 8 Grand Exchange slots live, so they show up on varrock.app on any device.",
+		section = syncSection,
+		position = 0
+	)
+	default boolean syncGeSlots()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "syncTrades",
+		name = "Log completed trades",
+		description = "When an offer fills (fully or partially), log it to your Varrock Profit tracker automatically.",
+		section = syncSection,
+		position = 1
+	)
+	default boolean syncTrades()
+	{
+		return true;
+	}
+}
