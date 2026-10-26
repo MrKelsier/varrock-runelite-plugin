@@ -28,7 +28,7 @@ public interface VarrockConfig extends Config
 	)
 	default String supabaseUrl()
 	{
-		return "https://vrzbuugvrhxllwxshelo.supabase.co";
+		return "https://tqcqniymzktldxeebxmg.supabase.co";
 	}
 
 	@ConfigItem(
@@ -40,7 +40,7 @@ public interface VarrockConfig extends Config
 	)
 	default String supabaseAnonKey()
 	{
-		return "sb_publishable_AO26420X1VX8y1KbzPt0fg_yrK-h_D6";
+		return "sb_publishable_gs5p23XTyBWbTXN5zxtLsw_ym8Eya_C";
 	}
 
 	@ConfigItem(
