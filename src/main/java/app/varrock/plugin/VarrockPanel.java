@@ -1,6 +1,5 @@
 package app.varrock.plugin;
 
-import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
 import java.awt.BorderLayout;
 import java.awt.Color;
@@ -162,6 +161,4 @@ class VarrockPanel extends PluginPanel
 		long updatedAt;
 		List<Pick> picks;
 	}
-
-	static final Gson GSON = new Gson();
 }

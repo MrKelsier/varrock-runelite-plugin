@@ -1,5 +1,6 @@
 package app.varrock.plugin;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonSyntaxException;
 import com.google.inject.Provides;
@@ -69,6 +70,9 @@ public class VarrockPlugin extends Plugin
 
 	@Inject
 	private ClientToolbar clientToolbar;
+
+	@Inject
+	private Gson gson;
 
 	private static final String PICKS_URL = "https://www.varrock.app/api/picks";
 
@@ -162,7 +166,7 @@ public class VarrockPlugin extends Plugin
 				return;
 			}
 			String body = res.body().string();
-			VarrockPanel.PicksResponse parsed = VarrockPanel.GSON.fromJson(body, VarrockPanel.PicksResponse.class);
+			VarrockPanel.PicksResponse parsed = gson.fromJson(body, VarrockPanel.PicksResponse.class);
 			List<VarrockPanel.Pick> picks = parsed != null && parsed.picks != null ? parsed.picks : List.of();
 			panel.showPicks(picks);
 		}
