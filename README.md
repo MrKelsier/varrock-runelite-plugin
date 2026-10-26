@@ -1,9 +1,10 @@
 # Varrock: GE Flipping Companion
 
-A GE flipping utility for RuneLite. Shows live top flip picks right in a RuneLite sidebar panel,
-free, no account needed, and optionally mirrors your Grand Exchange slots and logs completed
-trades to your free Varrock account (https://www.varrock.app), where flip scores, signals and a
-full profit tracker fill in automatically instead of by hand.
+A GE flipping utility for RuneLite. Shows live top flip picks in a sidebar panel and a live margin
+overlay right on the Grand Exchange screen, free, no account needed, and optionally mirrors your
+Grand Exchange slots and logs completed trades to your free Varrock account
+(https://www.varrock.app), where flip scores, signals and a full profit tracker fill in
+automatically instead of by hand.
 
 ## This plugin is always free
 
@@ -21,6 +22,16 @@ feature, against this project's own stated principles.
   website's own Dashboard shows (buy price, sell price, profit, score), fetched from
   varrock.app's own API every 5 minutes. No account needed to see it, works the moment you enable
   the plugin. Click a pick to open it on the website for the full picture.
+- **A live flip overlay on the Grand Exchange screen itself**: whichever item you've selected in
+  the GE's buy/sell setup screen gets a small panel next to it with its current buy/sell price,
+  margin, ROI, flip score and daily volume, pulled from the same free API as the picks panel and
+  the website. No alt-tabbing to a browser to check whether what you're about to buy is actually a
+  good flip. Toggleable in settings; no account needed.
+- **A locally-tracked GE buy-limit counter**, shown in that same overlay: every buy you make is
+  recorded here and summed over OSRS's real rolling 4-hour buy-limit window, next to the item's
+  real buy limit, with a countdown to when it frees up. RuneLite's client API has no way to read
+  your true remaining limit from the game itself, so this is only an estimate seeded from
+  purchases made since the plugin started this session, not a lifetime counter.
 - **GE slot mirroring** (needs a free account): listens for `GrandExchangeOfferChanged` and
   upserts each open offer (item, side, price, remaining quantity) into your Varrock account's
   `offers` table, tagged with the character it came from. When a slot empties, the row is
@@ -83,8 +94,13 @@ before any future resubmission, since this is actively maintained and rules can 
 ## Project layout
 
 - `src/main/java/app/varrock/plugin/VarrockPlugin.java`: the plugin itself, event handling,
-  per-slot fill tracking, and the picks panel's fetch/refresh loop.
+  per-slot fill tracking, the picks panel's fetch/refresh loop, and the GE overlay's per-item
+  stats cache.
 - `src/main/java/app/varrock/plugin/VarrockPanel.java`: the sidebar panel showing live top picks.
+- `src/main/java/app/varrock/plugin/VarrockGeOverlay.java`: the live margin/score/buy-limit panel
+  drawn next to the Grand Exchange offer screen.
+- `src/main/java/app/varrock/plugin/BuyLimitTracker.java`: the local, session-only rolling
+  4-hour buy-limit estimator backing the overlay's buy-limit line.
 - `src/main/java/app/varrock/plugin/VarrockConfig.java`: the settings panel fields.
 - `src/main/java/app/varrock/plugin/VarrockApiClient.java`: a small hand-rolled client for
   Supabase's own REST APIs (GoTrue for sign-in, PostgREST for the `trades`/`offers` tables). No
@@ -96,12 +112,13 @@ before any future resubmission, since this is actively maintained and rules can 
 - No autocomplete/full catalogue of RS3 or OSRS items beyond what the Grand Exchange interface
   itself already gives RuneLite; this plugin only reports what the client already knows about
   your own offers.
-- No flip scoring or recommendation logic computed in the plugin itself. The picks panel displays
-  numbers the website's own public API already computed (`ge-edge/api/picks.js`, which calls the
-  same `buildRows`/`flipScore` the Dashboard uses); duplicating that formula in Java would let it
-  drift out of sync with the website over time. It is the same free, unpersonalized list every
-  visitor and every install sees, never a better or different feed for anyone (see `docs/PLAN.md`,
-  "never sell flipping power").
+- No flip scoring or recommendation logic computed in the plugin itself. Both the picks panel and
+  the GE overlay display numbers the website's own public API already computed
+  (`ge-edge/api/picks.js` and `ge-edge/api/item.js`, which share the same `buildItemStats`/
+  `flipScore` the Dashboard uses); duplicating that formula in Java would let it drift out of sync
+  with the website over time. It is the same free, unpersonalized data every visitor and every
+  install sees, never a better or different feed for anyone (see `docs/PLAN.md`, "never sell
+  flipping power").
 - No telemetry beyond what you explicitly sync to your own Varrock account. The picks panel is a
   plain, unauthenticated read with no player data in the request; GE slot/trade sync still needs
   you to fill in the settings panel, and sends nothing if you don't.

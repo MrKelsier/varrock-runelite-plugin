@@ -28,10 +28,13 @@ import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
+import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.ImageUtil;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Mirrors the player's Grand Exchange slots and logs completed trades to their Varrock account
@@ -51,7 +54,7 @@ import okhttp3.Response;
 @Slf4j
 @PluginDescriptor(
 	name = "Varrock: GE Flipping Companion",
-	description = "GE flipping utility: a sidebar panel with live top picks, plus optional sync of your Grand Exchange slots and trades to your free Varrock (varrock.app) account",
+	description = "GE flipping utility: a live margin/ROI/score overlay with a buy-limit tracker on the GE screen, a sidebar panel with live top picks, plus optional sync of your Grand Exchange slots and trades to your free Varrock (varrock.app) account",
 	tags = {"grandexchange", "ge", "flipping", "flipping utilities", "merchanting", "trading", "varrock", "sync"}
 )
 public class VarrockPlugin extends Plugin
@@ -74,13 +77,41 @@ public class VarrockPlugin extends Plugin
 	@Inject
 	private Gson gson;
 
+	@Inject
+	private OverlayManager overlayManager;
+
+	@Inject
+	private VarrockGeOverlay geOverlay;
+
 	private static final String PICKS_URL = "https://www.varrock.app/api/picks";
+	private static final String ITEM_URL_BASE = "https://www.varrock.app/api/item?id=";
+	private static final long ITEM_STATS_TTL_MILLIS = 20_000;
 
 	private ExecutorService executor;
 	private ScheduledExecutorService picksExecutor;
 	private VarrockApiClient api;
 	private VarrockPanel panel;
 	private NavigationButton navButton;
+
+	private final BuyLimitTracker buyLimitTracker = new BuyLimitTracker();
+	private final Map<Integer, Integer> buyLimitSlotProgress = new HashMap<>();
+	private final Map<Integer, ItemStats> itemStatsCache = new ConcurrentHashMap<>();
+	private final Set<Integer> fetchingItemStats = ConcurrentHashMap.newKeySet();
+
+	/** Mirrors the JSON shape returned by ge-edge's api/item.js exactly. */
+	static class ItemStats
+	{
+		int id;
+		String name;
+		Integer limit;
+		long low;
+		long high;
+		long profit;
+		double roi;
+		long d1Vol;
+		int score;
+		transient long fetchedAtMillis;
+	}
 
 	/** Per-slot running totals, so a GE offer that fills in several steps is logged as several
 	 * small trades (one per actual fill event) instead of one trade per tick or, worse, the same
@@ -127,6 +158,10 @@ public class VarrockPlugin extends Plugin
 			return t;
 		});
 		picksExecutor.scheduleWithFixedDelay(this::fetchPicks, 0, 5, TimeUnit.MINUTES);
+
+		buyLimitSlotProgress.clear();
+		itemStatsCache.clear();
+		overlayManager.add(geOverlay);
 	}
 
 	@Override
@@ -147,9 +182,93 @@ public class VarrockPlugin extends Plugin
 			clientToolbar.removeNavigation(navButton);
 			navButton = null;
 		}
+		overlayManager.remove(geOverlay);
 		panel = null;
 		api = null;
 		progress.clear();
+		buyLimitSlotProgress.clear();
+		itemStatsCache.clear();
+	}
+
+	/** Returns cached flip stats for this item if we have a fresh-enough copy, kicking off a
+	 * background refresh (free, unauthenticated, same endpoint the website's own pages use) if
+	 * the cache is missing or stale. May return a stale or null value on the very first call for
+	 * an item; the overlay simply skips rendering until a result arrives. */
+	ItemStats statsFor(int itemId)
+	{
+		ItemStats cached = itemStatsCache.get(itemId);
+		boolean stale = cached == null || System.currentTimeMillis() - cached.fetchedAtMillis > ITEM_STATS_TTL_MILLIS;
+		if (stale && fetchingItemStats.add(itemId))
+		{
+			executor.submit(() -> fetchItemStats(itemId));
+		}
+		return cached;
+	}
+
+	private void fetchItemStats(int itemId)
+	{
+		try
+		{
+			Request req = new Request.Builder().url(ITEM_URL_BASE + itemId).build();
+			try (Response res = okHttpClient.newCall(req).execute())
+			{
+				if (res.isSuccessful() && res.body() != null)
+				{
+					String body = res.body().string();
+					ItemStats stats = gson.fromJson(body, ItemStats.class);
+					if (stats != null)
+					{
+						stats.fetchedAtMillis = System.currentTimeMillis();
+						itemStatsCache.put(itemId, stats);
+					}
+				}
+			}
+		}
+		catch (IOException | JsonSyntaxException e)
+		{
+			log.debug("Varrock: failed to load item stats for {}: {}", itemId, e.getMessage());
+		}
+		finally
+		{
+			fetchingItemStats.remove(itemId);
+		}
+	}
+
+	long boughtInWindow(int itemId)
+	{
+		return buyLimitTracker.boughtInWindow(itemId);
+	}
+
+	long secondsUntilLimitFrees(int itemId)
+	{
+		return buyLimitTracker.secondsUntilNextFree(itemId);
+	}
+
+	/** Always runs, regardless of sign-in: buy-limit tracking is a local-only, free feature with
+	 * no account involved, unlike the trade/slot sync below it. Keyed by slot like that sync's
+	 * own SlotProgress map, but kept separate since the two serve different purposes and resetting
+	 * one must not disturb the other. */
+	private void trackBuyLimit(int slot, GrandExchangeOffer offer, GrandExchangeOfferState state)
+	{
+		if (state == GrandExchangeOfferState.EMPTY)
+		{
+			buyLimitSlotProgress.remove(slot);
+			return;
+		}
+		boolean isBuy = state == GrandExchangeOfferState.BUYING
+			|| state == GrandExchangeOfferState.BOUGHT
+			|| state == GrandExchangeOfferState.CANCELLED_BUY;
+		if (!isBuy)
+		{
+			return;
+		}
+		int lastQty = buyLimitSlotProgress.getOrDefault(slot, 0);
+		int deltaQty = offer.getQuantitySold() - lastQty;
+		buyLimitSlotProgress.put(slot, offer.getQuantitySold());
+		if (deltaQty > 0)
+		{
+			buyLimitTracker.record(offer.getItemId(), deltaQty);
+		}
 	}
 
 	/** Pulls the same free, unpersonalized top picks the website's own Dashboard shows. No
@@ -232,6 +351,8 @@ public class VarrockPlugin extends Plugin
 	@Subscribe
 	public void onGrandExchangeOfferChanged(GrandExchangeOfferChanged event)
 	{
+		trackBuyLimit(event.getSlot(), event.getOffer(), event.getOffer().getState());
+
 		if (api == null || !api.isSignedIn())
 		{
 			return;

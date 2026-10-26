@@ -69,9 +69,28 @@ public interface VarrockConfig extends Config
 	}
 
 	@ConfigSection(
+		name = "Grand Exchange overlay",
+		description = "A panel next to the GE offer screen with live flip stats and your buy-limit usage for whichever item you've selected. No account needed.",
+		position = 1
+	)
+	String overlaySection = "overlay";
+
+	@ConfigItem(
+		keyName = "showGeOverlay",
+		name = "Show flip overlay",
+		description = "Shows margin, ROI, score, daily volume and your tracked buy-limit usage next to the Grand Exchange offer screen.",
+		section = overlaySection,
+		position = 0
+	)
+	default boolean showGeOverlay()
+	{
+		return true;
+	}
+
+	@ConfigSection(
 		name = "Sync",
 		description = "What gets sent to your Varrock account.",
-		position = 1
+		position = 2
 	)
 	String syncSection = "sync";
 
