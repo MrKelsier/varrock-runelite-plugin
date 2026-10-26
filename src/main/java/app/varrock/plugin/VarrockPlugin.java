@@ -17,6 +17,7 @@ import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import okhttp3.OkHttpClient;
 
 /**
  * Mirrors the player's Grand Exchange slots and logs completed trades to their Varrock account
@@ -39,6 +40,9 @@ public class VarrockPlugin extends Plugin
 
 	@Inject
 	private ConfigManager configManager;
+
+	@Inject
+	private OkHttpClient okHttpClient;
 
 	private ExecutorService executor;
 	private VarrockApiClient api;
@@ -109,7 +113,7 @@ public class VarrockPlugin extends Plugin
 			return;
 		}
 
-		VarrockApiClient client = new VarrockApiClient(url, key);
+		VarrockApiClient client = new VarrockApiClient(okHttpClient, url, key);
 		executor.submit(() -> {
 			try
 			{

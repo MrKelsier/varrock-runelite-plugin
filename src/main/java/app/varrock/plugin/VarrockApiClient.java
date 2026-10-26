@@ -2,19 +2,25 @@ package app.varrock.plugin;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
+import java.io.IOException;
 import java.util.function.Consumer;
 import lombok.extern.slf4j.Slf4j;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
 /**
  * A thin client for Supabase's own REST API (PostgREST for data, GoTrue for auth). No Supabase
  * SDK dependency: two endpoints and three verbs is not worth pulling in a library for, and it
  * keeps this plugin's dependency footprint small, which matters for something that runs inside
  * someone else's game client.
+ *
+ * Uses RuneLite's own shared {@link OkHttpClient} (injected by the plugin, never built here)
+ * rather than java.net.http, since the Plugin Hub's own automated checks reject plugins that
+ * build their own HTTP client instead of reusing RuneLite's (it respects the user's proxy and
+ * connection settings, and avoids every plugin spinning up its own connection pool).
  *
  * Every call here only ever touches the signed-in player's own rows: the tables this plugin
  * writes to (trades, offers) are row-level-security scoped to auth.uid() = user_id on the
@@ -24,10 +30,9 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 class VarrockApiClient
 {
-	private final HttpClient http = HttpClient.newBuilder()
-		.connectTimeout(Duration.ofSeconds(8))
-		.build();
+	private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
 
+	private final OkHttpClient http;
 	private final String baseUrl;
 	private final String anonKey;
 
@@ -35,8 +40,9 @@ class VarrockApiClient
 	private volatile String refreshToken;
 	private volatile String userId;
 
-	VarrockApiClient(String baseUrl, String anonKey)
+	VarrockApiClient(OkHttpClient http, String baseUrl, String anonKey)
 	{
+		this.http = http;
 		// Trim a trailing slash so URL building below never produces a double slash.
 		this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
 		this.anonKey = anonKey;
@@ -62,24 +68,26 @@ class VarrockApiClient
 		body.addProperty("email", email);
 		body.addProperty("password", password);
 
-		HttpRequest req = HttpRequest.newBuilder(URI.create(baseUrl + "/auth/v1/token?grant_type=password"))
+		Request req = new Request.Builder()
+			.url(baseUrl + "/auth/v1/token?grant_type=password")
 			.header("apikey", anonKey)
-			.header("Content-Type", "application/json")
-			.timeout(Duration.ofSeconds(10))
-			.POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+			.post(RequestBody.create(JSON, body.toString()))
 			.build();
 
-		HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
-		if (res.statusCode() != 200)
+		try (Response res = http.newCall(req).execute())
 		{
-			throw new VarrockApiException(describeAuthError(res));
-		}
+			String bodyText = res.body() != null ? res.body().string() : "";
+			if (!res.isSuccessful())
+			{
+				throw new VarrockApiException(describeAuthError(res.code(), bodyText));
+			}
 
-		JsonObject json = new JsonParser().parse(res.body()).getAsJsonObject();
-		accessToken = json.get("access_token").getAsString();
-		refreshToken = json.has("refresh_token") ? json.get("refresh_token").getAsString() : null;
-		userId = json.getAsJsonObject("user").get("id").getAsString();
-		log.info("Varrock: signed in");
+			JsonObject json = new JsonParser().parse(bodyText).getAsJsonObject();
+			accessToken = json.get("access_token").getAsString();
+			refreshToken = json.has("refresh_token") ? json.get("refresh_token").getAsString() : null;
+			userId = json.getAsJsonObject("user").get("id").getAsString();
+			log.info("Varrock: signed in");
+		}
 	}
 
 	void signOut()
@@ -89,11 +97,11 @@ class VarrockApiClient
 		userId = null;
 	}
 
-	private String describeAuthError(HttpResponse<String> res)
+	private String describeAuthError(int code, String bodyText)
 	{
 		try
 		{
-			JsonObject json = new JsonParser().parse(res.body()).getAsJsonObject();
+			JsonObject json = new JsonParser().parse(bodyText).getAsJsonObject();
 			if (json.has("error_description"))
 			{
 				return json.get("error_description").getAsString();
@@ -107,7 +115,7 @@ class VarrockApiClient
 		{
 			// fall through to the generic message below
 		}
-		return "Sign-in failed (HTTP " + res.statusCode() + ")";
+		return "Sign-in failed (HTTP " + code + ")";
 	}
 
 	/** Refreshes the session once, used when a data call comes back 401. Returns true on success. */
@@ -121,24 +129,26 @@ class VarrockApiClient
 		{
 			JsonObject body = new JsonObject();
 			body.addProperty("refresh_token", refreshToken);
-			HttpRequest req = HttpRequest.newBuilder(URI.create(baseUrl + "/auth/v1/token?grant_type=refresh_token"))
+			Request req = new Request.Builder()
+				.url(baseUrl + "/auth/v1/token?grant_type=refresh_token")
 				.header("apikey", anonKey)
-				.header("Content-Type", "application/json")
-				.timeout(Duration.ofSeconds(10))
-				.POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+				.post(RequestBody.create(JSON, body.toString()))
 				.build();
-			HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
-			if (res.statusCode() != 200)
+			try (Response res = http.newCall(req).execute())
 			{
-				return false;
+				if (!res.isSuccessful())
+				{
+					return false;
+				}
+				String bodyText = res.body() != null ? res.body().string() : "";
+				JsonObject json = new JsonParser().parse(bodyText).getAsJsonObject();
+				accessToken = json.get("access_token").getAsString();
+				if (json.has("refresh_token"))
+				{
+					refreshToken = json.get("refresh_token").getAsString();
+				}
+				return true;
 			}
-			JsonObject json = new JsonParser().parse(res.body()).getAsJsonObject();
-			accessToken = json.get("access_token").getAsString();
-			if (json.has("refresh_token"))
-			{
-				refreshToken = json.get("refresh_token").getAsString();
-			}
-			return true;
 		}
 		catch (Exception e)
 		{
@@ -150,30 +160,29 @@ class VarrockApiClient
 	/** Upserts one row into a table. The table's primary key (user_id, id) makes this idempotent. */
 	void upsert(String table, JsonObject row, Consumer<Exception> onError)
 	{
-		call(() -> HttpRequest.newBuilder(URI.create(baseUrl + "/rest/v1/" + table))
+		call(() -> new Request.Builder()
+			.url(baseUrl + "/rest/v1/" + table)
 			.header("apikey", anonKey)
 			.header("Authorization", "Bearer " + accessToken)
-			.header("Content-Type", "application/json")
 			.header("Prefer", "resolution=merge-duplicates,return=minimal")
-			.timeout(Duration.ofSeconds(10))
-			.POST(HttpRequest.BodyPublishers.ofString(row.toString()))
+			.post(RequestBody.create(JSON, row.toString()))
 			.build(), onError);
 	}
 
 	/** Deletes one row by its own id (always further scoped to this user by RLS). */
 	void deleteById(String table, String id, Consumer<Exception> onError)
 	{
-		call(() -> HttpRequest.newBuilder(URI.create(baseUrl + "/rest/v1/" + table + "?id=eq." + id))
+		call(() -> new Request.Builder()
+			.url(baseUrl + "/rest/v1/" + table + "?id=eq." + id)
 			.header("apikey", anonKey)
 			.header("Authorization", "Bearer " + accessToken)
-			.timeout(Duration.ofSeconds(10))
-			.DELETE()
+			.delete()
 			.build(), onError);
 	}
 
 	private interface RequestBuilder
 	{
-		HttpRequest build();
+		Request build();
 	}
 
 	private void call(RequestBuilder builder, Consumer<Exception> onError)
@@ -185,17 +194,27 @@ class VarrockApiClient
 		}
 		try
 		{
-			HttpResponse<String> res = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-			if (res.statusCode() == 401 && tryRefresh())
+			int code;
+			String bodyText;
+			try (Response res = http.newCall(builder.build()).execute())
 			{
-				res = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+				code = res.code();
+				bodyText = res.body() != null ? res.body().string() : "";
 			}
-			if (res.statusCode() >= 300)
+			if (code == 401 && tryRefresh())
 			{
-				onError.accept(new VarrockApiException("Varrock sync failed (HTTP " + res.statusCode() + "): " + res.body()));
+				try (Response res = http.newCall(builder.build()).execute())
+				{
+					code = res.code();
+					bodyText = res.body() != null ? res.body().string() : "";
+				}
+			}
+			if (code >= 300)
+			{
+				onError.accept(new VarrockApiException("Varrock sync failed (HTTP " + code + "): " + bodyText));
 			}
 		}
-		catch (Exception e)
+		catch (IOException e)
 		{
 			onError.accept(e);
 		}
