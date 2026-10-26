@@ -1,28 +1,48 @@
 package app.varrock.plugin;
 
 import com.google.gson.JsonObject;
+import com.google.gson.JsonSyntaxException;
 import com.google.inject.Provides;
+import java.awt.image.BufferedImage;
+import java.io.IOException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.Client;
 import net.runelite.api.GrandExchangeOffer;
 import net.runelite.api.GrandExchangeOfferState;
+import net.runelite.api.Player;
 import net.runelite.api.events.GrandExchangeOfferChanged;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.ui.ClientToolbar;
+import net.runelite.client.ui.NavigationButton;
+import net.runelite.client.util.ImageUtil;
 import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
 
 /**
  * Mirrors the player's Grand Exchange slots and logs completed trades to their Varrock account
  * (varrock.app), so the website's GE slots and Profit tracker fill in automatically instead of
  * by hand. 100% free and fully functional with no account at all; signing in only turns sync on.
+ *
+ * Every synced row is tagged with the currently logged-in character's display name
+ * (character_name), and GE slot rows are namespaced by it too, so one Varrock account can hold
+ * several characters' data (common for OSRS players with an ironman/main/skiller split) without
+ * one character's open slot 3 overwriting another's. A row is never written without a known
+ * character name: if the client is not logged in, the event is skipped entirely rather than
+ * guessing whose data it is.
  *
  * Never gates, license-checks, or reduces its own functionality based on account or payment
  * status, by design: see docs/PLAN.md in the ge-edge project and this plugin's own README.md.
@@ -30,7 +50,7 @@ import okhttp3.OkHttpClient;
 @Slf4j
 @PluginDescriptor(
 	name = "Varrock: GE Flipping Companion",
-	description = "GE flipping utility: syncs your Grand Exchange slots and trades to your free Varrock (varrock.app) account",
+	description = "GE flipping utility: a sidebar panel with live top picks, plus optional sync of your Grand Exchange slots and trades to your free Varrock (varrock.app) account",
 	tags = {"grandexchange", "ge", "flipping", "flipping utilities", "merchanting", "trading", "varrock", "sync"}
 )
 public class VarrockPlugin extends Plugin
@@ -44,8 +64,19 @@ public class VarrockPlugin extends Plugin
 	@Inject
 	private OkHttpClient okHttpClient;
 
+	@Inject
+	private Client client;
+
+	@Inject
+	private ClientToolbar clientToolbar;
+
+	private static final String PICKS_URL = "https://www.varrock.app/api/picks";
+
 	private ExecutorService executor;
+	private ScheduledExecutorService picksExecutor;
 	private VarrockApiClient api;
+	private VarrockPanel panel;
+	private NavigationButton navButton;
 
 	/** Per-slot running totals, so a GE offer that fills in several steps is logged as several
 	 * small trades (one per actual fill event) instead of one trade per tick or, worse, the same
@@ -75,6 +106,23 @@ public class VarrockPlugin extends Plugin
 		});
 		progress.clear();
 		trySignIn();
+
+		panel = new VarrockPanel();
+		BufferedImage icon = ImageUtil.loadImageResource(getClass(), "icon.png");
+		navButton = NavigationButton.builder()
+			.tooltip("Varrock")
+			.icon(icon)
+			.priority(6)
+			.panel(panel)
+			.build();
+		clientToolbar.addNavigation(navButton);
+
+		picksExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+			Thread t = new Thread(r, "varrock-picks");
+			t.setDaemon(true);
+			return t;
+		});
+		picksExecutor.scheduleWithFixedDelay(this::fetchPicks, 0, 5, TimeUnit.MINUTES);
 	}
 
 	@Override
@@ -85,8 +133,44 @@ public class VarrockPlugin extends Plugin
 			executor.shutdownNow();
 			executor = null;
 		}
+		if (picksExecutor != null)
+		{
+			picksExecutor.shutdownNow();
+			picksExecutor = null;
+		}
+		if (navButton != null)
+		{
+			clientToolbar.removeNavigation(navButton);
+			navButton = null;
+		}
+		panel = null;
 		api = null;
 		progress.clear();
+	}
+
+	/** Pulls the same free, unpersonalized top picks the website's own Dashboard shows. No
+	 * account or sign-in needed: this works identically whether or not the player has filled in
+	 * the settings panel above, same as every other free feature on Varrock. */
+	private void fetchPicks()
+	{
+		Request req = new Request.Builder().url(PICKS_URL).build();
+		try (Response res = okHttpClient.newCall(req).execute())
+		{
+			if (!res.isSuccessful() || res.body() == null)
+			{
+				panel.showError("Couldn't load picks (HTTP " + res.code() + ").");
+				return;
+			}
+			String body = res.body().string();
+			VarrockPanel.PicksResponse parsed = VarrockPanel.GSON.fromJson(body, VarrockPanel.PicksResponse.class);
+			List<VarrockPanel.Pick> picks = parsed != null && parsed.picks != null ? parsed.picks : List.of();
+			panel.showPicks(picks);
+		}
+		catch (IOException | JsonSyntaxException e)
+		{
+			log.warn("Varrock: failed to load top picks: {}", e.getMessage());
+			panel.showError("Couldn't load picks right now.");
+		}
 	}
 
 	@Subscribe
@@ -134,11 +218,25 @@ public class VarrockPlugin extends Plugin
 		return (s == null || s.trim().isEmpty()) ? null : s.trim();
 	}
 
+	/** The logged-in character's display name, or null if not logged in (e.g. still on the login screen). */
+	private String characterName()
+	{
+		Player local = client.getLocalPlayer();
+		return local != null ? local.getName() : null;
+	}
+
 	@Subscribe
 	public void onGrandExchangeOfferChanged(GrandExchangeOfferChanged event)
 	{
 		if (api == null || !api.isSignedIn())
 		{
+			return;
+		}
+
+		String character = characterName();
+		if (character == null)
+		{
+			// Can't safely tag or namespace a row without knowing whose data it is.
 			return;
 		}
 
@@ -151,7 +249,7 @@ public class VarrockPlugin extends Plugin
 			progress.remove(slot);
 			if (config.syncGeSlots())
 			{
-				deleteOfferRow(slot);
+				deleteOfferRow(character, slot);
 			}
 			return;
 		}
@@ -166,7 +264,7 @@ public class VarrockPlugin extends Plugin
 
 		if (config.syncTrades())
 		{
-			logFillDelta(slot, offer, isBuy);
+			logFillDelta(character, slot, offer, isBuy);
 		}
 
 		if (!config.syncGeSlots())
@@ -177,18 +275,18 @@ public class VarrockPlugin extends Plugin
 		int remaining = offer.getTotalQuantity() - offer.getQuantitySold();
 		if (finished || remaining <= 0)
 		{
-			deleteOfferRow(slot);
+			deleteOfferRow(character, slot);
 		}
 		else
 		{
-			upsertOfferRow(slot, offer, isBuy, remaining);
+			upsertOfferRow(character, slot, offer, isBuy, remaining);
 		}
 	}
 
 	/** Logs only the newly-filled portion since the last event for this slot, using the actual
 	 * average fill price (spent / quantitySold), which can differ slightly from the offer's own
 	 * listed price. */
-	private void logFillDelta(int slot, GrandExchangeOffer offer, boolean isBuy)
+	private void logFillDelta(String character, int slot, GrandExchangeOffer offer, boolean isBuy)
 	{
 		SlotProgress p = progress.computeIfAbsent(slot, k -> new SlotProgress());
 		if (p.itemId != 0 && p.itemId != offer.getItemId())
@@ -221,37 +319,42 @@ public class VarrockPlugin extends Plugin
 		row.addProperty("price", pricePerUnit);
 		row.addProperty("time", System.currentTimeMillis() / 1000);
 		row.addProperty("note", "Logged by the Varrock RuneLite plugin");
+		row.addProperty("character_name", character);
 
 		executor.submit(() -> api.upsert("trades", row, e -> log.warn("Varrock: trade log failed: {}", e.getMessage())));
 	}
 
-	private void upsertOfferRow(int slot, GrandExchangeOffer offer, boolean isBuy, int remaining)
+	private void upsertOfferRow(String character, int slot, GrandExchangeOffer offer, boolean isBuy, int remaining)
 	{
 		JsonObject row = new JsonObject();
 		row.addProperty("user_id", api.userId());
-		row.addProperty("id", offerRowId(slot));
+		row.addProperty("id", offerRowId(character, slot));
 		row.addProperty("item_id", offer.getItemId());
 		row.addProperty("side", isBuy ? "buy" : "sell");
 		row.addProperty("price", offer.getPrice());
 		row.addProperty("qty", remaining);
 		row.addProperty("placed_at", System.currentTimeMillis() / 1000);
+		row.addProperty("character_name", character);
 
 		executor.submit(() -> api.upsert("offers", row, e -> log.warn("Varrock: GE slot sync failed: {}", e.getMessage())));
 	}
 
-	private void deleteOfferRow(int slot)
+	private void deleteOfferRow(String character, int slot)
 	{
 		if (api == null || !api.isSignedIn())
 		{
 			return;
 		}
-		executor.submit(() -> api.deleteById("offers", offerRowId(slot), e -> log.warn("Varrock: GE slot clear failed: {}", e.getMessage())));
+		executor.submit(() -> api.deleteById("offers", offerRowId(character, slot), e -> log.warn("Varrock: GE slot clear failed: {}", e.getMessage())));
 	}
 
-	/** Stable per slot so repeated updates upsert the same row instead of piling up duplicates;
-	 * safe to reuse across accounts since every table is additionally scoped by user_id via RLS. */
-	private static String offerRowId(int slot)
+	/** Stable per character and slot so repeated updates upsert the same row instead of piling up
+	 * duplicates, and so two characters on the same account never collide on the same slot number
+	 * (each OSRS character has its own independent 8 GE slots in-game). Safe to reuse across
+	 * accounts since every table is additionally scoped by user_id via RLS. */
+	private static String offerRowId(String character, int slot)
 	{
-		return "slot-" + slot;
+		String safe = character.toLowerCase().replaceAll("[^a-z0-9]+", "-");
+		return "slot-" + safe + "-" + slot;
 	}
 }
