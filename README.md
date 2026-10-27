@@ -23,10 +23,12 @@ feature, against this project's own stated principles.
   showing up to 25 results with buy/sell price, profit, score and daily volume. Switching presets
   refetches instantly; the list otherwise refreshes every 5 minutes. No account needed, and no need
   to alt-tab to the website to see past the first page.
-- **A local watchlist with price alerts**: add the item currently open in the GE to your watchlist
+- **A local watchlist with price alerts** (up to 50 items): add the item currently open in the GE
   with one click, set a target (buy price, sell price, profit or ROI, above or below), and get a
-  RuneLite notification the moment it crosses, checked every 60 seconds even while you're off doing
-  something else. Stored entirely in RuneLite's own config, no account or website visit needed.
+  RuneLite notification the moment it crosses, checked every 45 seconds even while you're off doing
+  something else. The whole watchlist refreshes in a single batched request (`/api/item**s**`), not
+  one request per item, so it stays light even with it full. Stored entirely in RuneLite's own
+  config, no account or website visit needed; notifications can be turned off in settings.
 - **A session profit tracker**: every completed buy and sell this plugin observes is matched
   FIFO per item to compute your realized profit live in the panel, with no account at all. Resets
   when RuneLite restarts; signing in and enabling sync (below) is what gives a permanent,
@@ -128,7 +130,8 @@ before any future resubmission, since this is actively maintained and rules can 
   your own offers.
 - No flip scoring or recommendation logic computed in the plugin itself. The flip finder, the
   watchlist's live prices and the GE overlay all display numbers the website's own public API
-  already computed (`ge-edge/api/flips.js`, `api/picks.js` and `api/item.js`, which share the same
+  already computed (`ge-edge/api/flips.js`, `api/picks.js`, `api/item.js` and `api/items.js`, the
+  batched form the watchlist uses, all of which share the same
   `buildItemStats`/`flipScore` the Dashboard uses); duplicating that formula in Java would let it
   drift out of sync with the website over time. It is the same free, unpersonalized data every
   visitor and every install sees, never a better or different feed for anyone (see `docs/PLAN.md`,

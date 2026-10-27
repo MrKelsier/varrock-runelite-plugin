@@ -92,6 +92,7 @@ public class VarrockPlugin extends Plugin
 
 	private static final String FLIPS_URL_BASE = "https://www.varrock.app/api/flips?limit=25&preset=";
 	private static final String ITEM_URL_BASE = "https://www.varrock.app/api/item?id=";
+	private static final String ITEMS_BATCH_URL_BASE = "https://www.varrock.app/api/items?ids=";
 	private static final long ITEM_STATS_TTL_MILLIS = 20_000;
 
 	private volatile String currentPreset = "best";
@@ -121,6 +122,13 @@ public class VarrockPlugin extends Plugin
 		long d1Vol;
 		int score;
 		transient long fetchedAtMillis;
+	}
+
+	/** Mirrors the JSON shape returned by ge-edge's api/items.js exactly. */
+	private static class ItemsBatchResponse
+	{
+		long updatedAt;
+		List<ItemStats> items;
 	}
 
 	/** Per-slot running totals, so a GE offer that fills in several steps is reported as several
@@ -189,8 +197,7 @@ public class VarrockPlugin extends Plugin
 			return t;
 		});
 		picksExecutor.scheduleWithFixedDelay(() -> fetchFlips(currentPreset), 0, 5, TimeUnit.MINUTES);
-		picksExecutor.scheduleWithFixedDelay(this::checkWatchlistAlerts, 15, 60, TimeUnit.SECONDS);
-		picksExecutor.scheduleWithFixedDelay(() -> { if (panel != null) panel.refreshWatchlist(); }, 5, 30, TimeUnit.SECONDS);
+		picksExecutor.scheduleWithFixedDelay(this::refreshWatchlistData, 15, 45, TimeUnit.SECONDS);
 
 		fillProgress.clear();
 		itemStatsCache.clear();
@@ -266,6 +273,75 @@ public class VarrockPlugin extends Plugin
 		}
 	}
 
+	/** Cache-only lookup, never triggers a fetch: used where a batch refresh (see
+	 * {@link #refreshWatchlistData()}) already populated the cache moments earlier, so asking
+	 * {@link #statsFor} again per item would just mean one HTTP request per watched item instead
+	 * of the one batched request that already happened. */
+	ItemStats statsCached(int itemId)
+	{
+		return itemStatsCache.get(itemId);
+	}
+
+	/** Refreshes every currently-watched item in a single request (ge-edge's /api/items), instead
+	 * of one request per item: with up to 50 watched items polled on a timer, that is the
+	 * difference between a handful of requests a minute and a genuinely heavy load once this
+	 * plugin has many users, for data that was always going to be fetched together anyway. */
+	private void prefetchItemStats(List<Integer> itemIds)
+	{
+		if (itemIds.isEmpty())
+		{
+			return;
+		}
+		String ids = itemIds.stream().map(String::valueOf).reduce((a, b) -> a + "," + b).orElse("");
+		try
+		{
+			Request req = new Request.Builder().url(ITEMS_BATCH_URL_BASE + ids).build();
+			try (Response res = okHttpClient.newCall(req).execute())
+			{
+				if (res.isSuccessful() && res.body() != null)
+				{
+					String body = res.body().string();
+					ItemsBatchResponse parsed = gson.fromJson(body, ItemsBatchResponse.class);
+					if (parsed != null && parsed.items != null)
+					{
+						long now = System.currentTimeMillis();
+						for (ItemStats stats : parsed.items)
+						{
+							stats.fetchedAtMillis = now;
+							itemStatsCache.put(stats.id, stats);
+						}
+					}
+				}
+			}
+		}
+		catch (IOException | JsonSyntaxException e)
+		{
+			log.debug("Varrock: failed to refresh watchlist prices: {}", e.getMessage());
+		}
+	}
+
+	/** One combined refresh cycle for everything the watchlist needs: prices for display, and
+	 * alert evaluation, off a single batched fetch rather than two separate per-item polling
+	 * loops racing each other. */
+	private void refreshWatchlistData()
+	{
+		List<Integer> ids = watchlist.entries().stream().map(e -> e.itemId).distinct().collect(java.util.stream.Collectors.toList());
+		prefetchItemStats(ids);
+		if (panel != null)
+		{
+			panel.refreshWatchlist();
+		}
+		List<VarrockWatchlist.Entry> fired = watchlist.checkAlerts(this::statsCached);
+		if (!config.notifyOnAlerts())
+		{
+			return;
+		}
+		for (VarrockWatchlist.Entry e : fired)
+		{
+			notifier.notify(String.format("Varrock: %s's %s went %s %s", e.itemName, e.alertField.label, e.alertOp == VarrockWatchlist.Op.ABOVE ? "above" : "below", formatAlertValue(e)));
+		}
+	}
+
 	long boughtInWindow(int itemId)
 	{
 		return buyLimitTracker.boughtInWindow(itemId);
@@ -311,21 +387,6 @@ public class VarrockPlugin extends Plugin
 	VarrockWatchlist watchlist()
 	{
 		return watchlist;
-	}
-
-	/** Polled on a schedule rather than only on-demand, so an alert can fire even while the
-	 * player is off doing something else entirely (combat, skilling) with the GE screen closed. */
-	private void checkWatchlistAlerts()
-	{
-		List<VarrockWatchlist.Entry> fired = watchlist.checkAlerts(this::statsFor);
-		if (!config.notifyOnAlerts())
-		{
-			return;
-		}
-		for (VarrockWatchlist.Entry e : fired)
-		{
-			notifier.notify(String.format("Varrock: %s's %s went %s %s", e.itemName, e.alertField.label, e.alertOp == VarrockWatchlist.Op.ABOVE ? "above" : "below", formatAlertValue(e)));
-		}
 	}
 
 	private static String formatAlertValue(VarrockWatchlist.Entry e)
