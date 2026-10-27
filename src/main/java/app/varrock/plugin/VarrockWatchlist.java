@@ -25,7 +25,14 @@ class VarrockWatchlist
 
 	enum Field
 	{
-		LOW, HIGH, PROFIT, ROI
+		LOW("Buy price (low)"), HIGH("Sell price (high)"), PROFIT("Profit after tax"), ROI("ROI %");
+
+		final String label;
+
+		Field(String label)
+		{
+			this.label = label;
+		}
 	}
 
 	enum Op
@@ -98,19 +105,29 @@ class VarrockWatchlist
 		return new ArrayList<>(entries);
 	}
 
+	/** Plenty for genuine watching, and keeps the panel's periodic refresh loop (one HTTP request
+	 * per watched item) from quietly growing into a real amount of traffic. */
+	private static final int MAX_ENTRIES = 50;
+
 	synchronized boolean isWatched(int itemId)
 	{
 		return entries.stream().anyMatch(e -> e.itemId == itemId);
 	}
 
-	synchronized void add(int itemId, String itemName)
+	/** Returns false (and adds nothing) once at the cap, so the caller can tell the player why. */
+	synchronized boolean add(int itemId, String itemName)
 	{
 		if (isWatched(itemId))
 		{
-			return;
+			return true;
+		}
+		if (entries.size() >= MAX_ENTRIES)
+		{
+			return false;
 		}
 		entries.add(new Entry(itemId, itemName));
 		save();
+		return true;
 	}
 
 	synchronized void remove(int itemId)

@@ -88,9 +88,28 @@ public interface VarrockConfig extends Config
 	}
 
 	@ConfigSection(
+		name = "Watchlist alerts",
+		description = "Notifications for the sidebar watchlist's price alerts. The watchlist itself is always local to this client, account or not.",
+		position = 2
+	)
+	String alertsSection = "alerts";
+
+	@ConfigItem(
+		keyName = "notifyOnAlerts",
+		name = "Notify on alerts",
+		description = "Shows a RuneLite notification when a watched item's price crosses the target you set for it.",
+		section = alertsSection,
+		position = 0
+	)
+	default boolean notifyOnAlerts()
+	{
+		return true;
+	}
+
+	@ConfigSection(
 		name = "Sync",
 		description = "What gets sent to your Varrock account.",
-		position = 2
+		position = 3
 	)
 	String syncSection = "sync";
 

@@ -155,7 +155,11 @@ class VarrockPanel extends PluginPanel
 		}
 		VarrockPlugin.ItemStats stats = plugin.statsFor(itemId);
 		String name = stats != null ? stats.name : ("Item " + itemId);
-		plugin.watchlist().add(itemId, name);
+		if (!plugin.watchlist().add(itemId, name))
+		{
+			JOptionPane.showMessageDialog(this, "Watchlist is full (50 items). Remove something first.");
+			return;
+		}
 		refreshWatchlist();
 	}
 
@@ -246,7 +250,7 @@ class VarrockPanel extends PluginPanel
 		row.add(top);
 
 		JLabel alertLine = new JLabel(entry.hasAlert()
-			? String.format("Alert: %s %s %s%s", entry.alertField, entry.alertOp == VarrockWatchlist.Op.ABOVE ? "above" : "below", formatAlertValue(entry), entry.firing ? " (firing)" : "")
+			? String.format("Alert: %s %s %s%s", entry.alertField.label, entry.alertOp == VarrockWatchlist.Op.ABOVE ? "above" : "below", formatAlertValue(entry), entry.firing ? " (firing)" : "")
 			: "No alert set");
 		alertLine.setForeground(entry.firing ? Color.ORANGE : ColorScheme.LIGHT_GRAY_COLOR);
 		alertLine.setFont(FontManager.getRunescapeSmallFont());

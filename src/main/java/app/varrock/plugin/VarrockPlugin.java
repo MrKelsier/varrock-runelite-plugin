@@ -318,9 +318,13 @@ public class VarrockPlugin extends Plugin
 	private void checkWatchlistAlerts()
 	{
 		List<VarrockWatchlist.Entry> fired = watchlist.checkAlerts(this::statsFor);
+		if (!config.notifyOnAlerts())
+		{
+			return;
+		}
 		for (VarrockWatchlist.Entry e : fired)
 		{
-			notifier.notify(String.format("Varrock: %s crossed your alert (%s %s %s)", e.itemName, e.alertField, e.alertOp == VarrockWatchlist.Op.ABOVE ? "above" : "below", formatAlertValue(e)));
+			notifier.notify(String.format("Varrock: %s's %s went %s %s", e.itemName, e.alertField.label, e.alertOp == VarrockWatchlist.Op.ABOVE ? "above" : "below", formatAlertValue(e)));
 		}
 	}
 
@@ -412,14 +416,18 @@ public class VarrockPlugin extends Plugin
 		}
 	}
 
+	private static final Set<String> CREDENTIAL_KEYS = Set.of("supabaseUrl", "supabaseAnonKey", "email", "password");
+
 	@Subscribe
 	public void onConfigChanged(ConfigChanged event)
 	{
-		if (!"varrock".equals(event.getGroup()))
+		if (!"varrock".equals(event.getGroup()) || !CREDENTIAL_KEYS.contains(event.getKey()))
 		{
+			// The watchlist and other plugin state live in this same config group (see
+			// VarrockWatchlist), so without this key check every watchlist edit would needlessly
+			// re-authenticate against Supabase as if a credential had changed.
 			return;
 		}
-		// Any credential or project field changing means the old session (if any) is stale.
 		trySignIn();
 	}
 
