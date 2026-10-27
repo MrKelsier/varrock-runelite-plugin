@@ -58,6 +58,7 @@ class VarrockGeOverlay extends OverlayPanel
 		{
 			return null;
 		}
+		plugin.noteViewedItem(itemId);
 
 		VarrockPlugin.ItemStats stats = plugin.statsFor(itemId);
 		if (stats == null)

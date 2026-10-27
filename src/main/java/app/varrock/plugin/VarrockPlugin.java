@@ -21,6 +21,7 @@ import net.runelite.api.GrandExchangeOffer;
 import net.runelite.api.GrandExchangeOfferState;
 import net.runelite.api.Player;
 import net.runelite.api.events.GrandExchangeOfferChanged;
+import net.runelite.client.Notifier;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
@@ -54,8 +55,8 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 @PluginDescriptor(
 	name = "Varrock: GE Flipping Companion",
-	description = "GE flipping utility: a live margin/ROI/score overlay with a buy-limit tracker on the GE screen, a sidebar panel with live top picks, plus optional sync of your Grand Exchange slots and trades to your free Varrock (varrock.app) account",
-	tags = {"grandexchange", "ge", "flipping", "flipping utilities", "merchanting", "trading", "varrock", "sync"}
+	description = "GE flipping utility: a live margin/ROI/score overlay with a buy-limit tracker on the GE screen, a full filterable flip finder and watchlist with price alerts in the sidebar, a local session profit tracker, plus optional sync of your Grand Exchange slots and trades to your free Varrock (varrock.app) account",
+	tags = {"grandexchange", "ge", "flipping", "flipping utilities", "merchanting", "trading", "varrock", "sync", "alerts", "watchlist"}
 )
 public class VarrockPlugin extends Plugin
 {
@@ -83,9 +84,17 @@ public class VarrockPlugin extends Plugin
 	@Inject
 	private VarrockGeOverlay geOverlay;
 
-	private static final String PICKS_URL = "https://www.varrock.app/api/picks";
+	@Inject
+	private VarrockWatchlist watchlist;
+
+	@Inject
+	private Notifier notifier;
+
+	private static final String FLIPS_URL_BASE = "https://www.varrock.app/api/flips?limit=25&preset=";
 	private static final String ITEM_URL_BASE = "https://www.varrock.app/api/item?id=";
 	private static final long ITEM_STATS_TTL_MILLIS = 20_000;
+
+	private volatile String currentPreset = "best";
 
 	private ExecutorService executor;
 	private ScheduledExecutorService picksExecutor;
@@ -94,9 +103,10 @@ public class VarrockPlugin extends Plugin
 	private NavigationButton navButton;
 
 	private final BuyLimitTracker buyLimitTracker = new BuyLimitTracker();
-	private final Map<Integer, Integer> buyLimitSlotProgress = new HashMap<>();
+	private final LocalProfitTracker profitTracker = new LocalProfitTracker();
 	private final Map<Integer, ItemStats> itemStatsCache = new ConcurrentHashMap<>();
 	private final Set<Integer> fetchingItemStats = ConcurrentHashMap.newKeySet();
+	private volatile int lastViewedItemId = 0;
 
 	/** Mirrors the JSON shape returned by ge-edge's api/item.js exactly. */
 	static class ItemStats
@@ -113,16 +123,37 @@ public class VarrockPlugin extends Plugin
 		transient long fetchedAtMillis;
 	}
 
-	/** Per-slot running totals, so a GE offer that fills in several steps is logged as several
-	 * small trades (one per actual fill event) instead of one trade per tick or, worse, the same
-	 * fill logged again every time the offer object is reported. Cleared when a slot goes EMPTY. */
-	private final Map<Integer, SlotProgress> progress = new HashMap<>();
+	/** Per-slot running totals, so a GE offer that fills in several steps is reported as several
+	 * small fills (one per actual fill event) instead of one fill per tick or, worse, the same
+	 * fill reported again every time the offer object is reported. Cleared when a slot goes EMPTY.
+	 * Shared by every feature that cares about fills (buy-limit tracking, the local profit
+	 * tracker, and account sync below), computed once per event rather than three separate times. */
+	private final Map<Integer, SlotProgress> fillProgress = new HashMap<>();
 
 	private static class SlotProgress
 	{
 		int lastQuantitySold;
 		long lastSpent;
 		int itemId;
+	}
+
+	/** One observed fill: the portion of an offer that newly completed since the last event for
+	 * that slot, with its actual average fill price (spent / quantitySold, which can differ
+	 * slightly from the offer's own listed price). */
+	private static class Fill
+	{
+		final int itemId;
+		final boolean isBuy;
+		final int quantity;
+		final long pricePerUnit;
+
+		Fill(int itemId, boolean isBuy, int quantity, long pricePerUnit)
+		{
+			this.itemId = itemId;
+			this.isBuy = isBuy;
+			this.quantity = quantity;
+			this.pricePerUnit = pricePerUnit;
+		}
 	}
 
 	@Provides
@@ -139,10 +170,10 @@ public class VarrockPlugin extends Plugin
 			t.setDaemon(true);
 			return t;
 		});
-		progress.clear();
 		trySignIn();
 
-		panel = new VarrockPanel();
+		panel = new VarrockPanel(this);
+		panel.updateProfit(profitTracker.realizedProfit(), profitTracker.tradeCount());
 		BufferedImage icon = ImageUtil.loadImageResource(getClass(), "icon.png");
 		navButton = NavigationButton.builder()
 			.tooltip("Varrock")
@@ -157,9 +188,11 @@ public class VarrockPlugin extends Plugin
 			t.setDaemon(true);
 			return t;
 		});
-		picksExecutor.scheduleWithFixedDelay(this::fetchPicks, 0, 5, TimeUnit.MINUTES);
+		picksExecutor.scheduleWithFixedDelay(() -> fetchFlips(currentPreset), 0, 5, TimeUnit.MINUTES);
+		picksExecutor.scheduleWithFixedDelay(this::checkWatchlistAlerts, 15, 60, TimeUnit.SECONDS);
+		picksExecutor.scheduleWithFixedDelay(() -> { if (panel != null) panel.refreshWatchlist(); }, 5, 30, TimeUnit.SECONDS);
 
-		buyLimitSlotProgress.clear();
+		fillProgress.clear();
 		itemStatsCache.clear();
 		overlayManager.add(geOverlay);
 	}
@@ -185,8 +218,7 @@ public class VarrockPlugin extends Plugin
 		overlayManager.remove(geOverlay);
 		panel = null;
 		api = null;
-		progress.clear();
-		buyLimitSlotProgress.clear();
+		fillProgress.clear();
 		itemStatsCache.clear();
 	}
 
@@ -244,55 +276,139 @@ public class VarrockPlugin extends Plugin
 		return buyLimitTracker.secondsUntilNextFree(itemId);
 	}
 
-	/** Always runs, regardless of sign-in: buy-limit tracking is a local-only, free feature with
-	 * no account involved, unlike the trade/slot sync below it. Keyed by slot like that sync's
-	 * own SlotProgress map, but kept separate since the two serve different purposes and resetting
-	 * one must not disturb the other. */
-	private void trackBuyLimit(int slot, GrandExchangeOffer offer, GrandExchangeOfferState state)
+	long sessionProfit()
 	{
-		if (state == GrandExchangeOfferState.EMPTY)
+		return profitTracker.realizedProfit();
+	}
+
+	int sessionTradeCount()
+	{
+		return profitTracker.tradeCount();
+	}
+
+	void resetSessionProfit()
+	{
+		profitTracker.reset();
+		if (panel != null)
 		{
-			buyLimitSlotProgress.remove(slot);
-			return;
-		}
-		boolean isBuy = state == GrandExchangeOfferState.BUYING
-			|| state == GrandExchangeOfferState.BOUGHT
-			|| state == GrandExchangeOfferState.CANCELLED_BUY;
-		if (!isBuy)
-		{
-			return;
-		}
-		int lastQty = buyLimitSlotProgress.getOrDefault(slot, 0);
-		int deltaQty = offer.getQuantitySold() - lastQty;
-		buyLimitSlotProgress.put(slot, offer.getQuantitySold());
-		if (deltaQty > 0)
-		{
-			buyLimitTracker.record(offer.getItemId(), deltaQty);
+			panel.updateProfit(0, 0);
 		}
 	}
 
-	/** Pulls the same free, unpersonalized top picks the website's own Dashboard shows. No
-	 * account or sign-in needed: this works identically whether or not the player has filled in
-	 * the settings panel above, same as every other free feature on Varrock. */
-	private void fetchPicks()
+	/** Called by the GE overlay each time it draws for a known item, so the panel's "watch this
+	 * item" button always refers to whatever the player currently has open in the GE, without the
+	 * panel needing its own item search UI. */
+	void noteViewedItem(int itemId)
 	{
-		Request req = new Request.Builder().url(PICKS_URL).build();
+		lastViewedItemId = itemId;
+	}
+
+	int lastViewedItemId()
+	{
+		return lastViewedItemId;
+	}
+
+	VarrockWatchlist watchlist()
+	{
+		return watchlist;
+	}
+
+	/** Polled on a schedule rather than only on-demand, so an alert can fire even while the
+	 * player is off doing something else entirely (combat, skilling) with the GE screen closed. */
+	private void checkWatchlistAlerts()
+	{
+		List<VarrockWatchlist.Entry> fired = watchlist.checkAlerts(this::statsFor);
+		for (VarrockWatchlist.Entry e : fired)
+		{
+			notifier.notify(String.format("Varrock: %s crossed your alert (%s %s %s)", e.itemName, e.alertField, e.alertOp == VarrockWatchlist.Op.ABOVE ? "above" : "below", formatAlertValue(e)));
+		}
+	}
+
+	private static String formatAlertValue(VarrockWatchlist.Entry e)
+	{
+		return e.alertField == VarrockWatchlist.Field.ROI ? String.format("%.2f%%", e.alertValue) : String.format("%,d", (long) e.alertValue);
+	}
+
+	/** The newly-filled portion of this offer since the last event for its slot, or null if
+	 * nothing new filled (most GE events are just UI state changes, not fills) or the slot just
+	 * went empty. Always computed, regardless of sign-in: buy-limit tracking and the local profit
+	 * tracker are free, local-only features with no account involved. */
+	private Fill computeFill(int slot, GrandExchangeOffer offer, GrandExchangeOfferState state)
+	{
+		if (state == GrandExchangeOfferState.EMPTY)
+		{
+			fillProgress.remove(slot);
+			return null;
+		}
+		SlotProgress p = fillProgress.computeIfAbsent(slot, k -> new SlotProgress());
+		if (p.itemId != 0 && p.itemId != offer.getItemId())
+		{
+			// A new offer was placed in this slot before we saw it go EMPTY (e.g. after a
+			// RuneLite restart); start this slot's tracking over rather than mislog a diff
+			// across two unrelated offers.
+			p.lastQuantitySold = 0;
+			p.lastSpent = 0;
+		}
+		p.itemId = offer.getItemId();
+
+		int deltaQty = offer.getQuantitySold() - p.lastQuantitySold;
+		long deltaSpent = offer.getSpent() - p.lastSpent;
+		p.lastQuantitySold = offer.getQuantitySold();
+		p.lastSpent = offer.getSpent();
+		if (deltaQty <= 0)
+		{
+			return null;
+		}
+
+		boolean isBuy = state == GrandExchangeOfferState.BUYING
+			|| state == GrandExchangeOfferState.BOUGHT
+			|| state == GrandExchangeOfferState.CANCELLED_BUY;
+		long pricePerUnit = Math.round(deltaSpent / (double) deltaQty);
+		return new Fill(offer.getItemId(), isBuy, deltaQty, pricePerUnit);
+	}
+
+	/** Switches the flip list to a different preset (mirrors the website's own Flip Finder
+	 * presets exactly, see ge-edge's src/pages/Flips.tsx and api/_picks.js's presetFilters) and
+	 * fetches it immediately rather than waiting for the next scheduled refresh. */
+	void setPreset(String preset)
+	{
+		currentPreset = preset;
+		executor.submit(() -> fetchFlips(preset));
+	}
+
+	String currentPreset()
+	{
+		return currentPreset;
+	}
+
+	/** Pulls the same free, unpersonalized flip list the website's own Flip Finder shows for the
+	 * given preset. No account or sign-in needed: this works identically whether or not the
+	 * player has filled in the settings panel above, same as every other free feature on Varrock. */
+	private void fetchFlips(String preset)
+	{
+		Request req = new Request.Builder().url(FLIPS_URL_BASE + preset).build();
 		try (Response res = okHttpClient.newCall(req).execute())
 		{
 			if (!res.isSuccessful() || res.body() == null)
 			{
-				panel.showError("Couldn't load picks (HTTP " + res.code() + ").");
+				panel.showError("Couldn't load flips (HTTP " + res.code() + ").");
 				return;
 			}
 			String body = res.body().string();
-			VarrockPanel.PicksResponse parsed = gson.fromJson(body, VarrockPanel.PicksResponse.class);
-			List<VarrockPanel.Pick> picks = parsed != null && parsed.picks != null ? parsed.picks : List.of();
-			panel.showPicks(picks);
+			VarrockPanel.FlipsResponse parsed = gson.fromJson(body, VarrockPanel.FlipsResponse.class);
+			List<VarrockPanel.Pick> flips = parsed != null && parsed.flips != null ? parsed.flips : List.of();
+			if (preset.equals(currentPreset))
+			{
+				panel.showPicks(flips);
+			}
 		}
 		catch (IOException | JsonSyntaxException e)
 		{
-			log.warn("Varrock: failed to load top picks: {}", e.getMessage());
-			panel.showError("Couldn't load picks right now.");
+			log.warn("Varrock: failed to load flips: {}", e.getMessage());
+			if (preset.equals(currentPreset))
+			{
+				panel.showError("Couldn't load flips right now.");
+			}
 		}
 	}
 
@@ -351,7 +467,23 @@ public class VarrockPlugin extends Plugin
 	@Subscribe
 	public void onGrandExchangeOfferChanged(GrandExchangeOfferChanged event)
 	{
-		trackBuyLimit(event.getSlot(), event.getOffer(), event.getOffer().getState());
+		int slot = event.getSlot();
+		GrandExchangeOffer offer = event.getOffer();
+		GrandExchangeOfferState state = offer.getState();
+
+		Fill fill = computeFill(slot, offer, state);
+		if (fill != null)
+		{
+			if (fill.isBuy)
+			{
+				buyLimitTracker.record(fill.itemId, fill.quantity);
+			}
+			profitTracker.record(fill.itemId, fill.isBuy, fill.quantity, fill.pricePerUnit);
+			if (panel != null)
+			{
+				panel.updateProfit(profitTracker.realizedProfit(), profitTracker.tradeCount());
+			}
+		}
 
 		if (api == null || !api.isSignedIn())
 		{
@@ -365,13 +497,8 @@ public class VarrockPlugin extends Plugin
 			return;
 		}
 
-		int slot = event.getSlot();
-		GrandExchangeOffer offer = event.getOffer();
-		GrandExchangeOfferState state = offer.getState();
-
 		if (state == GrandExchangeOfferState.EMPTY)
 		{
-			progress.remove(slot);
 			if (config.syncGeSlots())
 			{
 				deleteOfferRow(character, slot);
@@ -387,9 +514,9 @@ public class VarrockPlugin extends Plugin
 			|| state == GrandExchangeOfferState.CANCELLED_BUY
 			|| state == GrandExchangeOfferState.CANCELLED_SELL;
 
-		if (config.syncTrades())
+		if (config.syncTrades() && fill != null)
 		{
-			logFillDelta(character, slot, offer, isBuy);
+			logFill(character, fill);
 		}
 
 		if (!config.syncGeSlots())
@@ -408,40 +535,15 @@ public class VarrockPlugin extends Plugin
 		}
 	}
 
-	/** Logs only the newly-filled portion since the last event for this slot, using the actual
-	 * average fill price (spent / quantitySold), which can differ slightly from the offer's own
-	 * listed price. */
-	private void logFillDelta(String character, int slot, GrandExchangeOffer offer, boolean isBuy)
+	private void logFill(String character, Fill fill)
 	{
-		SlotProgress p = progress.computeIfAbsent(slot, k -> new SlotProgress());
-		if (p.itemId != 0 && p.itemId != offer.getItemId())
-		{
-			// A new offer was placed in this slot before we saw it go EMPTY (e.g. after a
-			// RuneLite restart); start this slot's tracking over rather than mislog a diff
-			// across two unrelated offers.
-			p.lastQuantitySold = 0;
-			p.lastSpent = 0;
-		}
-		p.itemId = offer.getItemId();
-
-		int deltaQty = offer.getQuantitySold() - p.lastQuantitySold;
-		long deltaSpent = offer.getSpent() - p.lastSpent;
-		p.lastQuantitySold = offer.getQuantitySold();
-		p.lastSpent = offer.getSpent();
-
-		if (deltaQty <= 0)
-		{
-			return;
-		}
-
-		long pricePerUnit = Math.round(deltaSpent / (double) deltaQty);
 		JsonObject row = new JsonObject();
 		row.addProperty("user_id", api.userId());
 		row.addProperty("id", UUID.randomUUID().toString());
-		row.addProperty("item_id", offer.getItemId());
-		row.addProperty("side", isBuy ? "buy" : "sell");
-		row.addProperty("qty", deltaQty);
-		row.addProperty("price", pricePerUnit);
+		row.addProperty("item_id", fill.itemId);
+		row.addProperty("side", fill.isBuy ? "buy" : "sell");
+		row.addProperty("qty", fill.quantity);
+		row.addProperty("price", fill.pricePerUnit);
 		row.addProperty("time", System.currentTimeMillis() / 1000);
 		row.addProperty("note", "Logged by the Varrock RuneLite plugin");
 		row.addProperty("character_name", character);

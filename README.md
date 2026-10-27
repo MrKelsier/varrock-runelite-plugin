@@ -1,10 +1,10 @@
 # Varrock: GE Flipping Companion
 
-A GE flipping utility for RuneLite. Shows live top flip picks in a sidebar panel and a live margin
-overlay right on the Grand Exchange screen, free, no account needed, and optionally mirrors your
-Grand Exchange slots and logs completed trades to your free Varrock account
-(https://www.varrock.app), where flip scores, signals and a full profit tracker fill in
-automatically instead of by hand.
+A GE flipping utility for RuneLite, built to be useful entirely inside the client: a full
+filterable flip finder, a live margin overlay on the Grand Exchange screen, a local watchlist with
+price alerts and notifications, and a session profit tracker, all free and working with no account
+at all. Signing in is purely optional, and only adds cross-device sync of your Grand Exchange slots
+and trade history to your free Varrock account (https://www.varrock.app).
 
 ## This plugin is always free
 
@@ -18,10 +18,19 @@ feature, against this project's own stated principles.
 
 ## What it does
 
-- **A sidebar panel with live top flip picks**: the same free, unpersonalized top 12 picks the
-  website's own Dashboard shows (buy price, sell price, profit, score), fetched from
-  varrock.app's own API every 5 minutes. No account needed to see it, works the moment you enable
-  the plugin. Click a pick to open it on the website for the full picture.
+- **A full filterable flip finder in the sidebar**, not just a top-12 teaser: the same presets as
+  the website's own Flip Finder (Best, Volume, Big ticket, Under 100k, High ROI, Hidden gems), each
+  showing up to 25 results with buy/sell price, profit, score and daily volume. Switching presets
+  refetches instantly; the list otherwise refreshes every 5 minutes. No account needed, and no need
+  to alt-tab to the website to see past the first page.
+- **A local watchlist with price alerts**: add the item currently open in the GE to your watchlist
+  with one click, set a target (buy price, sell price, profit or ROI, above or below), and get a
+  RuneLite notification the moment it crosses, checked every 60 seconds even while you're off doing
+  something else. Stored entirely in RuneLite's own config, no account or website visit needed.
+- **A session profit tracker**: every completed buy and sell this plugin observes is matched
+  FIFO per item to compute your realized profit live in the panel, with no account at all. Resets
+  when RuneLite restarts; signing in and enabling sync (below) is what gives a permanent,
+  cross-device trade history on the website instead.
 - **A live flip overlay on the Grand Exchange screen itself**: whichever item you've selected in
   the GE's buy/sell setup screen gets a small panel next to it with its current buy/sell price,
   margin, ROI, flip score and daily volume, pulled from the same free API as the picks panel and
@@ -93,14 +102,19 @@ before any future resubmission, since this is actively maintained and rules can 
 
 ## Project layout
 
-- `src/main/java/app/varrock/plugin/VarrockPlugin.java`: the plugin itself, event handling,
-  per-slot fill tracking, the picks panel's fetch/refresh loop, and the GE overlay's per-item
-  stats cache.
-- `src/main/java/app/varrock/plugin/VarrockPanel.java`: the sidebar panel showing live top picks.
+- `src/main/java/app/varrock/plugin/VarrockPlugin.java`: the plugin itself, event handling, the
+  single shared per-slot fill tracker everything else is built on, the flip finder's fetch/refresh
+  loop, the GE overlay's per-item stats cache, and the watchlist alert check.
+- `src/main/java/app/varrock/plugin/VarrockPanel.java`: the sidebar panel (flip finder presets,
+  watchlist, session profit).
 - `src/main/java/app/varrock/plugin/VarrockGeOverlay.java`: the live margin/score/buy-limit panel
   drawn next to the Grand Exchange offer screen.
 - `src/main/java/app/varrock/plugin/BuyLimitTracker.java`: the local, session-only rolling
   4-hour buy-limit estimator backing the overlay's buy-limit line.
+- `src/main/java/app/varrock/plugin/LocalProfitTracker.java`: the local, session-only FIFO
+  buy/sell matcher backing the session profit tracker, no account involved.
+- `src/main/java/app/varrock/plugin/VarrockWatchlist.java`: the local watchlist and price-alert
+  store (RuneLite config, not Supabase) and the alert-crossing check.
 - `src/main/java/app/varrock/plugin/VarrockConfig.java`: the settings panel fields.
 - `src/main/java/app/varrock/plugin/VarrockApiClient.java`: a small hand-rolled client for
   Supabase's own REST APIs (GoTrue for sign-in, PostgREST for the `trades`/`offers` tables). No
@@ -112,13 +126,14 @@ before any future resubmission, since this is actively maintained and rules can 
 - No autocomplete/full catalogue of RS3 or OSRS items beyond what the Grand Exchange interface
   itself already gives RuneLite; this plugin only reports what the client already knows about
   your own offers.
-- No flip scoring or recommendation logic computed in the plugin itself. Both the picks panel and
-  the GE overlay display numbers the website's own public API already computed
-  (`ge-edge/api/picks.js` and `ge-edge/api/item.js`, which share the same `buildItemStats`/
-  `flipScore` the Dashboard uses); duplicating that formula in Java would let it drift out of sync
-  with the website over time. It is the same free, unpersonalized data every visitor and every
-  install sees, never a better or different feed for anyone (see `docs/PLAN.md`, "never sell
-  flipping power").
-- No telemetry beyond what you explicitly sync to your own Varrock account. The picks panel is a
-  plain, unauthenticated read with no player data in the request; GE slot/trade sync still needs
-  you to fill in the settings panel, and sends nothing if you don't.
+- No flip scoring or recommendation logic computed in the plugin itself. The flip finder, the
+  watchlist's live prices and the GE overlay all display numbers the website's own public API
+  already computed (`ge-edge/api/flips.js`, `api/picks.js` and `api/item.js`, which share the same
+  `buildItemStats`/`flipScore` the Dashboard uses); duplicating that formula in Java would let it
+  drift out of sync with the website over time. It is the same free, unpersonalized data every
+  visitor and every install sees, never a better or different feed for anyone (see `docs/PLAN.md`,
+  "never sell flipping power").
+- No telemetry beyond what you explicitly sync to your own Varrock account. The flip finder,
+  watchlist and overlay are plain, unauthenticated reads with no player data in the request; GE
+  slot/trade sync still needs you to fill in the settings panel, and sends nothing if you don't.
+  The watchlist and session profit tracker never leave your own machine at all, signed in or not.
